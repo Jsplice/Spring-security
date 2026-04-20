@@ -37,15 +37,15 @@ Push / PR
          Job Summary (pass/fail table)
 ```
 
-### Required GitHub Secret
+### Required GitHub Secrets
 
 Before the first pipeline run, add the following in **Settings → Secrets and variables → Actions**:
 
-| Secret | Value |
+| Secret | How to get it |
 |---|---|
-| `SONAR_TOKEN` | *(not needed — pipeline auto-generates an ephemeral token from the service container)* |
+| `NVD_API_KEY` | Free key from [nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key) — required by OWASP Dependency-Check to query the NVD without hitting rate limits |
 
-No secrets are required for this setup. SonarQube spins up inside the runner and the pipeline creates its own analysis token automatically.
+SonarQube runs as a service container inside the GitHub Actions runner and auto-provisions its own ephemeral analysis token — no additional secret needed for that stage.
 
 ---
 
