@@ -101,12 +101,18 @@ jobs:
         # even when the build fails due to a CVE >= threshold.
         # The overall job still fails via the explicit exit-code check below.
         # NVD_API_KEY is required — without it the NVD returns 403 on CI runners.
+        # Store as a repository Variable (Settings → Variables → Actions → NVD_API_KEY).
         # Get a free key at: https://nvd.nist.gov/developers/request-an-api-key
         continue-on-error: true
         id: owasp
         env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: mvn dependency-check:check -B -DskipTests -DnvdApiKey=${NVD_API_KEY}
+          # Support both Variables (vars) and Secrets — whichever the user configured
+          NVD_API_KEY: ${{ vars.NVD_API_KEY || secrets.NVD_API_KEY }}
+        run: |
+          mvn dependency-check:check -B -DskipTests \
+            -DnvdApiKey=${NVD_API_KEY} \
+            -DnvdApiDelay=6000 \
+            -DretireJsAnalyzerEnabled=false
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
