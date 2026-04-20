@@ -116,8 +116,7 @@ jobs:
         continue-on-error: true
         id: owasp
         env:
-          # Support both Variables (vars) and Secrets — whichever the user configured
-          NVD_API_KEY: ${{ vars.NVD_API_KEY || secrets.NVD_API_KEY }}
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
           mvn dependency-check:check -B -DskipTests \
             -DnvdApiKey=${NVD_API_KEY} \
