@@ -90,6 +90,16 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      # Cache the OWASP NVD database between runs.
+      # Version 10+ uses a local H2 cache with delta-updates, so subsequent runs
+      # only download what changed since the last run instead of the full dataset.
+      - name: Cache OWASP NVD database
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: owasp-nvd-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+          restore-keys: owasp-nvd-${{ runner.os }}-
+
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
