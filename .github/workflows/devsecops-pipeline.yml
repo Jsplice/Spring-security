@@ -1,0 +1,341 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Restrict default token permissions to least-privilege
+permissions:
+  contents: read
+  security-events: write   # required for SARIF uploads to GitHub Security tab
+  actions: read
+
+jobs:
+
+  # ============================================================
+  # Job 1 — Build & Test
+  # Compiles the project, runs unit tests, and generates a
+  # JaCoCo coverage report. The compiled target/ directory is
+  # passed as an artifact to subsequent jobs so they don't
+  # need to rebuild.
+  # ============================================================
+  build-and-test:
+    name: "Build & Test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build and run tests with coverage
+        run: mvn verify -B
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: target/
+          retention-days: 1
+
+      - name: Write coverage to Job Summary
+        run: |
+          COVERAGE=$(python3 - <<'EOF'
+          import xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse('target/site/jacoco/jacoco.xml')
+              root = tree.getroot()
+              for counter in root.iter('counter'):
+                  if counter.attrib.get('type') == 'INSTRUCTION':
+                      missed = int(counter.attrib['missed'])
+                      covered = int(counter.attrib['covered'])
+                      total = missed + covered
+                      pct = round((covered / total) * 100, 1) if total > 0 else 0
+                      print(f"{pct}")
+                      break
+          except Exception:
+              print("N/A")
+          EOF
+          )
+          echo "### Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Job 2 — SCA: OWASP Dependency-Check
+  # Scans all Maven dependencies against the NVD.
+  # Produces HTML + SARIF + JSON reports.
+  # SARIF is uploaded to the GitHub Security tab.
+  # HTML report is available as a downloadable artifact.
+  # ============================================================
+  sca-owasp:
+    name: "SCA — OWASP Dependency-Check"
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: target/
+
+      - name: Run OWASP Dependency-Check
+        # continue-on-error allows the SARIF upload step to always run,
+        # even when the build fails due to a CVE >= threshold.
+        # The overall job still fails via the explicit exit-code check below.
+        continue-on-error: true
+        id: owasp
+        run: mvn dependency-check:check -B -DskipTests
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: target/dependency-check-report/dependency-check-report.sarif
+          category: owasp-dependency-check
+
+      - name: Upload HTML report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check-report
+          path: target/dependency-check-report/dependency-check-report.html
+          retention-days: 14
+
+      - name: Write OWASP result to Job Summary
+        if: always()
+        run: |
+          if [ "${{ steps.owasp.outcome }}" == "success" ]; then
+            echo "| OWASP Dependency-Check | PASSED | [Download Report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| OWASP Dependency-Check | FAILED — CVE(s) above threshold found | [Download Report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail job if OWASP found blocking CVEs
+        if: steps.owasp.outcome == 'failure'
+        run: exit 1
+
+  # ============================================================
+  # Job 3 — Container Scan: Trivy
+  # Builds the Docker image and scans it for OS-level and
+  # application-level CVEs. Results go to the GitHub Security tab.
+  # ============================================================
+  container-scan-trivy:
+    name: "Container Scan — Trivy"
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: target/
+
+      - name: Build Docker image
+        run: docker build -t secure-api:${{ github.sha }} .
+
+      - name: Run Trivy container scan (SARIF)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secure-api:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: '0'   # don't fail here — let the upload complete first
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+      - name: Run Trivy scan (table — for Job Summary)
+        id: trivy_table
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secure-api:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Write Trivy result to Job Summary
+        if: always()
+        run: |
+          if [ "${{ steps.trivy_table.outcome }}" == "success" ]; then
+            echo "| Trivy Container Scan | PASSED — no CRITICAL/HIGH CVEs | — |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Trivy Container Scan | FINDINGS — see Security tab | [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================
+  # Job 4 — Secret Scan: Gitleaks
+  # Scans the entire git history for hardcoded credentials,
+  # tokens, and API keys. SARIF uploaded to Security tab.
+  # ============================================================
+  secret-scan-gitleaks:
+    name: "Secret Scan — Gitleaks"
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: Checkout (full history for secret scanning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        id: gitleaks
+        continue-on-error: true
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Write Gitleaks result to Job Summary
+        if: always()
+        run: |
+          if [ "${{ steps.gitleaks.outcome }}" == "success" ]; then
+            echo "| Gitleaks Secret Scan | PASSED — no secrets detected | — |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Gitleaks Secret Scan | FINDINGS — secrets detected in history | [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail job if secrets found
+        if: steps.gitleaks.outcome == 'failure'
+        run: exit 1
+
+  # ============================================================
+  # Job 5 — SAST: SonarQube
+  # Spins up SonarQube Community as a service container on the
+  # runner, waits for it to be healthy, then runs the Maven
+  # Sonar scanner. Quality gate result is written to the summary.
+  #
+  # Required secret: SONAR_TOKEN (Global Analysis Token)
+  # ============================================================
+  sast-sonarqube:
+    name: "SAST — SonarQube"
+    runs-on: ubuntu-latest
+    needs: [ sca-owasp, container-scan-trivy, secret-scan-gitleaks ]
+
+    services:
+      sonarqube:
+        image: sonarqube:community
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 90s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set vm.max_map_count for Elasticsearch (required by SonarQube)
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: target/
+
+      - name: Wait for SonarQube to be ready
+        run: |
+          echo "Waiting for SonarQube..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf http://localhost:9000/api/system/status | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" == "UP" ]; then
+              echo "SonarQube is UP"
+              break
+            fi
+            echo "Attempt $i — status: ${STATUS:-not ready}"
+            sleep 10
+          done
+
+      - name: Create SonarQube project
+        run: |
+          curl -sf -u admin:admin -X POST \
+            "http://localhost:9000/api/projects/create?name=secure-api&project=secure-api" || true
+
+      - name: Generate SonarQube token
+        id: sonar_token
+        run: |
+          TOKEN=$(curl -sf -u admin:admin -X POST \
+            "http://localhost:9000/api/user_tokens/generate?name=ci-token-${{ github.run_id }}&type=GLOBAL_ANALYSIS_TOKEN" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Run SonarQube scan
+        run: |
+          mvn compile sonar:sonar \
+            -Dsonar.projectKey=secure-api \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.token=${{ steps.sonar_token.outputs.token }} \
+            -Dsonar.scm.disabled=true \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+            -B
+
+      - name: Check Quality Gate
+        id: quality_gate
+        run: |
+          sleep 10
+          RESULT=$(curl -sf \
+            -u admin:admin \
+            "http://localhost:9000/api/qualitygates/project_status?projectKey=secure-api" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['projectStatus']['status'])")
+          echo "status=$RESULT" >> $GITHUB_OUTPUT
+          echo "SonarQube Quality Gate: $RESULT"
+
+      - name: Write final Job Summary table
+        if: always()
+        run: |
+          echo "## Security Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Result | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          cat $GITHUB_STEP_SUMMARY | grep "^| " | grep -v "^| Stage" >> /tmp/existing_rows.txt || true
+          cat /tmp/existing_rows.txt >> $GITHUB_STEP_SUMMARY || true
+          QG="${{ steps.quality_gate.outputs.status }}"
+          if [ "$QG" == "OK" ]; then
+            echo "| SonarQube Quality Gate | PASSED | [Dashboard](http://localhost:9000/dashboard?id=secure-api) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| SonarQube Quality Gate | ${QG} | Review SonarQube dashboard |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail if Quality Gate did not pass
+        if: steps.quality_gate.outputs.status != 'OK'
+        run: |
+          echo "SonarQube Quality Gate status: ${{ steps.quality_gate.outputs.status }}"
+          exit 1

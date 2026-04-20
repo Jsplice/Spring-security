@@ -1,6 +1,51 @@
 # 🛡️ Secure Java Enterprise Boilerplate (DevSecOps Focus)
 
-> Spring Boot 3 · Java 21 · OWASP SCA · SonarQube SAST · Hardened Docker
+> Spring Boot 3 · Java 21 · OWASP SCA · SonarQube SAST · Trivy · Gitleaks · Hardened Docker
+
+[![DevSecOps Pipeline](https://github.com/Jsplice/Spring-security/actions/workflows/devsecops-pipeline.yml/badge.svg)](https://github.com/Jsplice/Spring-security/actions/workflows/devsecops-pipeline.yml)
+
+---
+
+## Pipeline Overview
+
+Every push to `main` and every Pull Request triggers a fully automated security pipeline. Results are visible at a glance in three places:
+
+| Where | What you see |
+|---|---|
+| **Actions tab → Run → Summary** | Markdown table: pass/fail per stage + coverage % |
+| **Security tab → Code scanning alerts** | All CVEs and secrets, filterable by tool and severity |
+| **Pull Request → Files changed** | Inline annotations on the exact lines with findings |
+
+### Pipeline Stages
+
+```
+Push / PR
+    │
+    ▼
+[1] Build & Test ──────────────────── mvn verify + JaCoCo coverage
+    │
+    ├──▶ [2] SCA — OWASP Dependency-Check   CVEs in Maven deps → SARIF → Security tab
+    │
+    ├──▶ [3] Container Scan — Trivy         CVEs in Docker image → SARIF → Security tab
+    │
+    └──▶ [4] Secret Scan — Gitleaks         Hardcoded secrets in git history → SARIF → Security tab
+              │
+              ▼
+         [5] SAST — SonarQube               Code quality gate (runs as service container)
+              │
+              ▼
+         Job Summary (pass/fail table)
+```
+
+### Required GitHub Secret
+
+Before the first pipeline run, add the following in **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `SONAR_TOKEN` | *(not needed — pipeline auto-generates an ephemeral token from the service container)* |
+
+No secrets are required for this setup. SonarQube spins up inside the runner and the pipeline creates its own analysis token automatically.
 
 ---
 

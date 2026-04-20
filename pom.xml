@@ -24,6 +24,7 @@
     <properties>
         <java.version>21</java.version>
         <owasp.dependency-check.version>9.1.0</owasp.dependency-check.version>
+        <jacoco.version>0.8.11</jacoco.version>
     </properties>
 
     <dependencies>
@@ -55,10 +56,33 @@
             </plugin>
 
             <!--
+                JaCoCo: Test Coverage
+                Instruments tests and produces reports consumed by SonarQube and the CI Job Summary.
+                Report location: target/site/jacoco/jacoco.xml
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
                 OWASP Dependency-Check: Software Composition Analysis (SCA)
                 Scans all project dependencies against the National Vulnerability Database (NVD).
                 Run with: mvn dependency-check:check
                 Fails build if a CVE with CVSS score >= 7 is found.
+                Format ALL produces: HTML (human-readable) + SARIF (GitHub Security tab) + JSON.
             -->
             <plugin>
                 <groupId>org.owasp</groupId>
@@ -66,7 +90,7 @@
                 <version>${owasp.dependency-check.version}</version>
                 <configuration>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
-                    <format>HTML</format>
+                    <format>ALL</format>
                     <outputDirectory>${project.build.directory}/dependency-check-report</outputDirectory>
                     <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
                 </configuration>
