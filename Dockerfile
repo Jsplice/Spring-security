@@ -13,7 +13,8 @@ RUN mvn dependency:go-offline -B
 
 # Copy source and build, skipping unit tests (tests run in CI pipeline).
 COPY src ./src
-RUN mvn clean package -DskipTests -B
+# Skip OWASP in image build — it pulls the NVD database (~300k records) and is meant for CI, not container builds.
+RUN mvn clean package -DskipTests -B -Ddependency-check.skip=true
 
 # ============================================================
 # Stage 2 — Runtime

@@ -2,8 +2,6 @@ package com.example.secureapi.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.userdetails.User;
@@ -49,7 +47,9 @@ public class SecurityConfig {
                         .logoutSuccessUrl("/login?logout")
                         .invalidateHttpSession(true)
                 )
-                .headers(h -> h.frameOptions(fo -> fo.disable())) // H2 console in dev
+                // H2 console requires same-origin framing; disable only that restriction,
+                // not the full clickjacking protection.
+                .headers(h -> h.frameOptions(fo -> fo.sameOrigin()))
                 .csrf(c -> c.ignoringRequestMatchers("/h2-console/**"))
                 .build();
     }
@@ -88,8 +88,4 @@ public class SecurityConfig {
         };
     }
 
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration c) throws Exception {
-        return c.getAuthenticationManager();
-    }
 }

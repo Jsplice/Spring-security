@@ -6,6 +6,27 @@
 
 ---
 
+## Library App
+
+A small but fully functional web application bundled with the boilerplate to demonstrate a secured, stateful Spring Boot feature beyond a plain REST endpoint.
+
+![Bücherkatalog Screenshot](docs/screenshot-library.png)
+
+### Features at a glance
+
+| Feature | Detail |
+|---|---|
+| **Name-only login** | Enter any name — no password required. Spring Security creates a session-scoped `READER` principal on the fly. |
+| **Live book catalog** | Six pre-seeded titles, rendered as cards with a coloured accent bar per book. |
+| **Borrow / Return** | One click borrows a book and marks it `AUSGELIEHEN`; only the borrower sees the *Zurückgeben* button. |
+| **Availability badge** | Cards show `VERFÜGBAR` (green) or `AUSGELIEHEN` (amber) at a glance. |
+| **Borrower tag** | Borrowed cards display a highlighted "An \<name\>" label so everyone can see who has the book. |
+| **Persistent within session** | State is kept in an H2 in-memory database — restarting the container resets all loans. |
+
+Open [http://localhost:8080](http://localhost:8080) after `docker compose up -d`, enter your name, and start borrowing.
+
+---
+
 ## Pipeline Overview
 
 Every push to `main` and every Pull Request triggers a fully automated security pipeline. Results are visible at a glance in three places:
@@ -28,7 +49,7 @@ Push / PR
     │
     ├──▶ [3] Container Scan — Trivy         CVEs in Docker image → SARIF → Security tab
     │
-    └──▶ [4] Secret Scan — Gitleaks         Hardcoded secrets in git history → SARIF → Security tab
+    └──▶ [4] Secret Scan — Gitleaks         Hardcoded secrets in git history → job fails on finding
               │
               ▼
          [5] SAST — SonarQube               Code quality gate (runs as service container)
@@ -72,7 +93,7 @@ This boilerplate represents the *kind* of baseline I establish at the start of a
 | Language | Java 21 (LTS) |
 | Framework | Spring Boot 3.2 |
 | Build tool | Apache Maven 3.9 |
-| SCA (dependency scanning) | OWASP Dependency-Check 9.x |
+| SCA (dependency scanning) | OWASP Dependency-Check 12.x |
 | SAST / Code Quality | SonarQube Community |
 | Containerisation | Docker (multi-stage), Docker Compose |
 | Runtime image | `eclipse-temurin:21-jre` (minimal footprint) |
@@ -84,16 +105,33 @@ This boilerplate represents the *kind* of baseline I establish at the start of a
 ```
 .
 ├── src/
-│   └── main/
-│       ├── java/com/example/secureapi/
-│       │   ├── SecureApiApplication.java   # Bootstrap entry point
-│       │   └── SecureApiController.java    # REST endpoint /api/v1/status
-│       └── resources/
-│           └── application.properties
-├── Dockerfile                              # Multi-stage, non-root build
-├── docker-compose.yml                      # API + SonarQube services
-├── owasp-suppressions.xml                  # Documented CVE false-positive suppressions
-├── pom.xml                                 # Spring Boot 3 + OWASP plugin
+│   ├── main/
+│   │   ├── java/com/example/secureapi/
+│   │   │   ├── SecureApiApplication.java        # Bootstrap entry point
+│   │   │   ├── SecureApiController.java         # REST /api/v1/status
+│   │   │   ├── config/
+│   │   │   │   ├── SecurityConfig.java          # Spring Security (name-only login)
+│   │   │   │   └── LibraryDataSeeder.java       # Seed books on startup
+│   │   │   └── library/
+│   │   │       ├── domain/Book.java             # JPA entity
+│   │   │       ├── repo/BookRepository.java     # Spring Data repository
+│   │   │       ├── service/LibraryService.java  # Borrow / return logic
+│   │   │       └── web/
+│   │   │           ├── PageController.java      # / and /login routes
+│   │   │           └── BookController.java      # /books routes
+│   │   └── resources/
+│   │       ├── application.properties
+│   │       └── templates/
+│   │           ├── login.html
+│   │           └── books.html
+│   └── test/java/com/example/secureapi/
+│       └── SecureApiControllerTest.java         # @WebMvcTest for /api/v1/status
+├── .github/workflows/devsecops-pipeline.yml     # 5-stage CI/CD pipeline
+├── docs/screenshot-library.png
+├── Dockerfile                                   # Multi-stage, non-root build
+├── docker-compose.yml                           # API + SonarQube services
+├── owasp-suppressions.xml                       # CVE false-positive suppressions
+├── pom.xml                                      # Spring Boot 3, OWASP, JaCoCo
 └── README.md
 ```
 
@@ -112,14 +150,14 @@ This boilerplate represents the *kind* of baseline I establish at the start of a
 ### 1. Run the full stack with Docker Compose
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This will:
 1. Build the application JAR inside a Maven container (Stage 1).
 2. Package it into a minimal JRE runtime image (Stage 2).
 3. Start the **SonarQube** server at [http://localhost:9000](http://localhost:9000).
-4. Start the **Spring Boot API** at [http://localhost:8080](http://localhost:8080) once SonarQube passes its health check.
+4. Start the **Spring Boot API** at [http://localhost:8080](http://localhost:8080).
 
 > **Note:** SonarQube requires `vm.max_map_count >= 262144` on Linux hosts.
 > Run: `sudo sysctl -w vm.max_map_count=262144`
@@ -138,14 +176,22 @@ curl http://localhost:8080/actuator/health
 Scans all Maven dependencies against the [National Vulnerability Database (NVD)](https://nvd.nist.gov/).
 The build **fails automatically** if any dependency has a CVE with a CVSS score ≥ 7.
 
+Because Maven is not required locally, run the scan inside Docker:
+
 ```bash
-mvn dependency-check:check
+docker run --rm \
+  -v "$(pwd):/build" \
+  -w /build \
+  maven:3.9-eclipse-temurin-21 \
+  mvn dependency-check:check -B -Dformats=ALL
 ```
 
-The HTML report is generated at:
+Reports are generated at:
 
 ```
-target/dependency-check-report/dependency-check-report.html
+target/dependency-check-report/dependency-check-report.html   ← human-readable
+target/dependency-check-report/dependency-check-report.sarif  ← Security tab
+target/dependency-check-report/dependency-check-report.json   ← machine-readable
 ```
 
 To suppress a confirmed false positive, add a documented entry to `owasp-suppressions.xml`.
@@ -189,14 +235,14 @@ Then open [http://localhost:9000/dashboard?id=secure-api](http://localhost:9000/
 - Bug detections
 - Security Hotspots
 - Duplications
-- Test coverage (add JaCoCo to `pom.xml` to enable)
+- Test coverage (JaCoCo is already configured in `pom.xml`; reports appear under `target/site/jacoco/`)
 
 ---
 
 ### 4. Tear down
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 The `-v` flag removes the named volumes, giving you a clean SonarQube state on the next run.

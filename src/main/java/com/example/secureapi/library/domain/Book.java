@@ -24,7 +24,7 @@ public class Book {
     @Column(nullable = false, length = 200)
     private String author;
 
-    @Column(nullable = false, length = 4)
+    @Column(name = "pub_year", nullable = false, length = 4)
     private String year;
 
     @Column(nullable = false, length = 6)

@@ -38,7 +38,8 @@ services:
   # ------------------------------------------------------------------
   # API — Spring Boot Application
   # Built from the local Dockerfile using the multi-stage strategy.
-  # Waits for SonarQube to be healthy before starting (CI gate).
+  # SonarQube is an analysis tool — the API does not depend on it at
+  # runtime, so no depends_on is set here.
   # ------------------------------------------------------------------
   api:
     build:
@@ -47,13 +48,9 @@ services:
     container_name: secure-api
     ports:
       - "8080:8080"
-    environment:
-      - SPRING_PROFILES_ACTIVE=docker
-    depends_on:
-      sonarqube:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      # eclipse-temurin:21-jre does not include curl; use wget which is available.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
       interval: 20s
       timeout: 5s
       retries: 5
