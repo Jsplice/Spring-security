@@ -37,7 +37,11 @@ jobs:
           cache: 'maven'
 
       - name: Build and run tests with coverage
-        run: mvn verify -B
+        # Skip OWASP Dependency-Check here — it runs as a dedicated job (sca-owasp)
+        # with NVD key validation and caching. Without this flag, mvn verify would
+        # also trigger the OWASP plugin (bound to the verify phase) and block for
+        # 30-50 minutes downloading the NVD database without an API key.
+        run: mvn verify -B -Ddependency-check.skip=true
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
