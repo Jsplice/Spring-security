@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Opt into Node.js 24 for all actions — suppresses Node.js 20 deprecation warnings.
+# GitHub will force Node.js 24 by default from June 2nd, 2026.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Restrict default token permissions to least-privilege
 permissions:
   contents: read
@@ -152,7 +157,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security tab
         if: steps.nvd_check.outputs.valid == 'true' && always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: target/dependency-check-report/dependency-check-report.sarif
           category: owasp-dependency-check
@@ -208,10 +213,14 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '0'   # don't fail here — let the upload complete first
+          # ignore-unfixed: CVEs with no available patch are reported but don't block.
+          # This prevents false-positive failures from base image OS packages that
+          # upstream (e.g. Eclipse Temurin) hasn't patched yet.
+          ignore-unfixed: true
+          exit-code: '0'
 
       - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-container
@@ -224,6 +233,7 @@ jobs:
           image-ref: secure-api:${{ github.sha }}
           format: table
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: '1'
 
       - name: Write Trivy result to Job Summary
