@@ -106,13 +106,36 @@ jobs:
           name: build-artifact
           path: target/
 
+      # Validate the NVD API key before attempting the full scan.
+      # If the key is missing or returns a non-200 from the NVD API,
+      # all subsequent OWASP steps are skipped gracefully.
+      - name: Validate NVD API Key
+        id: nvd_check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "${NVD_API_KEY}" ]; then
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "reason=NVD_API_KEY secret is not set" >> $GITHUB_OUTPUT
+            echo "⚠️ **OWASP Dependency-Check skipped** — \`NVD_API_KEY\` secret is not configured." >> $GITHUB_STEP_SUMMARY
+            echo "Get a free key at: https://nvd.nist.gov/developers/request-an-api-key" >> $GITHUB_STEP_SUMMARY
+          else
+            HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              "https://services.nvd.nist.gov/rest/json/cves/2.0?apiKey=${NVD_API_KEY}&resultsPerPage=1" \
+              2>/dev/null || echo "000")
+            if [ "${HTTP_STATUS}" == "200" ]; then
+              echo "valid=true" >> $GITHUB_OUTPUT
+              echo "NVD API Key validated successfully (HTTP 200)"
+            else
+              echo "valid=false" >> $GITHUB_OUTPUT
+              echo "reason=NVD API returned HTTP ${HTTP_STATUS}" >> $GITHUB_OUTPUT
+              echo "⚠️ **OWASP Dependency-Check skipped** — NVD API returned HTTP \`${HTTP_STATUS}\`." >> $GITHUB_STEP_SUMMARY
+              echo "The key may not be activated yet. Check https://nvd.nist.gov/developers/request-an-api-key" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
       - name: Run OWASP Dependency-Check
-        # continue-on-error allows the SARIF upload step to always run,
-        # even when the build fails due to a CVE >= threshold.
-        # The overall job still fails via the explicit exit-code check below.
-        # NVD_API_KEY is required — without it the NVD returns 403 on CI runners.
-        # Store as a repository Variable (Settings → Variables → Actions → NVD_API_KEY).
-        # Get a free key at: https://nvd.nist.gov/developers/request-an-api-key
+        if: steps.nvd_check.outputs.valid == 'true'
         continue-on-error: true
         id: owasp
         env:
@@ -124,14 +147,14 @@ jobs:
             -DretireJsAnalyzerEnabled=false
 
       - name: Upload SARIF to GitHub Security tab
-        if: always()
+        if: steps.nvd_check.outputs.valid == 'true' && always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: target/dependency-check-report/dependency-check-report.sarif
           category: owasp-dependency-check
 
       - name: Upload HTML report as artifact
-        if: always()
+        if: steps.nvd_check.outputs.valid == 'true' && always()
         uses: actions/upload-artifact@v4
         with:
           name: owasp-dependency-check-report
@@ -139,7 +162,7 @@ jobs:
           retention-days: 14
 
       - name: Write OWASP result to Job Summary
-        if: always()
+        if: steps.nvd_check.outputs.valid == 'true' && always()
         run: |
           if [ "${{ steps.owasp.outcome }}" == "success" ]; then
             echo "| OWASP Dependency-Check | PASSED | [Download Report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
@@ -148,7 +171,7 @@ jobs:
           fi
 
       - name: Fail job if OWASP found blocking CVEs
-        if: steps.owasp.outcome == 'failure'
+        if: steps.nvd_check.outputs.valid == 'true' && steps.owasp.outcome == 'failure'
         run: exit 1
 
   # ============================================================
